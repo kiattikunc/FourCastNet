@@ -81,7 +81,9 @@ def gaussian_perturb(x, level=0.01, device=0):
 def load_model(model, params, checkpoint_file):
     model.zero_grad()
     checkpoint_fname = checkpoint_file
-    checkpoint = torch.load(checkpoint_fname)
+    #GPU checkpoint = torch.load(checkpoint_fname, weights_only=False)
+    checkpoint = torch.load(checkpoint_fname , weights_only=False, map_location=torch.device('cpu') ) #CPU
+
     try:
         new_state_dict = OrderedDict()
         for key, val in checkpoint['model_state'].items():
@@ -154,7 +156,7 @@ def setup(params):
     valid_data_full = h5py.File(files_paths[yr], 'r')['fields']
 
     # precip paths
-    path = params.precip + '/out_of_sample'
+    path = params.precip 
     precip_paths = glob.glob(path + "/*.h5")
     precip_paths.sort()
     if params.log_to_screen:
@@ -284,18 +286,20 @@ def autoregressive_inference(params, ic, valid_data_full, valid_data_tp_full, mo
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--run_num", default='00', type=str)
-    parser.add_argument("--yaml_config", default='./config/AFNO.yaml', type=str)
+    parser.add_argument("--yaml_config", default='/content/drive/MyDrive/FourCastNet/config/AFNO.yaml', type=str)
+
+    
     parser.add_argument("--config", default='full_field', type=str)
     parser.add_argument("--vis", action='store_true')
     parser.add_argument("--override_dir", default=None, type = str, help = 'Path to store inference outputs; must also set --weights arg')
     parser.add_argument("--weights", default=None, type=str, help = 'Path to model weights, for use with override_dir option')
-    
+  
     args = parser.parse_args()
     params = YParams(os.path.abspath(args.yaml_config), args.config)
     params['world_size'] = 1
     params['global_batch_size'] = params.batch_size
 
-    torch.cuda.set_device(0)
+    #torch.cuda.set_device(0)
     torch.backends.cudnn.benchmark = True
     vis = args.vis
 

@@ -76,12 +76,9 @@ import s3fs  # added to handle S3 Bucket data retrieval
 # Set up S3 bucket file system
 s3 = s3fs.S3FileSystem()
 
-fld = "u10" # diff flds have diff decor times and hence differnt ics
-if fld == "z500" or fld == "2m_temperature" or fld == "t850":
-    DECORRELATION_TIME = 36 # 9 days (36) for z500, 2 (8 steps) days for u10, v10
-else:
-    DECORRELATION_TIME = 8 # 9 days (36) for z500, 2 (8 steps) days for u10, v10
-idxes = {"u10":0, "z500":14, "2m_temperature":2, "v10":1, "t850":5}
+# Define dictionaries to swap between variable indices and names
+idxes = {'U10': 0, 'V10': 1, 'T2m': 2, 'sp': 3, 'mslp': 4, 'U1000': 5, 'V1000': 6, 'Z1000': 7, 'T850': 8, 'U850': 9, 'V850': 10, 'Z850': 11, 'RH850': 12, 'T500': 13, 'U500': 14, 'V500': 15, 'Z500': 16, 'RH500': 17, 'Z50': 18, 'TCWV': 19}
+# idx2name = {0: "U10", 1: "V10", 2: "T2m", 3: "sp", 4: "mslp", 5: "U1000", 6: "V1000", 7: "Z1000", 8: "T850", 9: "U850", 10: "V850", 11: "Z850", 12: "RH850", 13: "T500", 14: "U500", 15: "V500", 16: "Z500", 17: "RH500", 18: "Z50", 19: "TCWV"}
 
 def gaussian_perturb(x, level=0.01, device=0):
     noise = level * torch.randn(x.shape).to(device, dtype=torch.float)
@@ -89,7 +86,6 @@ def gaussian_perturb(x, level=0.01, device=0):
 
 def load_model(model, params, checkpoint_file):
     model.zero_grad()
-    print("checkpoint file = ", checkpoint_file)
     if checkpoint_file.startswith("s3://"):
         checkpoint_fname = checkpoint_file
         checkpoint = torch.load(s3.open(checkpoint_fname, 'rb'), map_location=torch.device('cpu'))
@@ -163,8 +159,7 @@ def setup(params):
     yr = 0
     if params.log_to_screen:
         logging.info('Loading inference data')
-        # logging.info('Inference data from {}'.format(files_paths[yr]))
-        print("Inference data from ", params.inf_data_path)
+        logging.info('Inference data from {}'.format(params.inf_data_path))
     
     if params.inf_data_path.startswith("s3://"):
         valid_data_full = h5py.File(s3.open(params.inf_data_path, 'rb'), 'r')['fields']
@@ -174,11 +169,9 @@ def setup(params):
     return valid_data_full, model
 
 def autoregressive_inference(params, ic, valid_data_full, model): 
-    print("--- entering autoregressive inference 1 ---")
     ic = int(ic) 
     #initialize global variables
     device = torch.cuda.current_device() if torch.cuda.is_available() else 'cpu'
-    print("--- entering autoregressive inference 2 ---")
     exp_dir = params['experiment_dir'] 
     dt = int(params.dt)
     prediction_length = int(params.prediction_length/dt)
@@ -191,47 +184,39 @@ def autoregressive_inference(params, ic, valid_data_full, model):
     n_out_channels = len(out_channels)
     means = params.means
     stds = params.stds
-    print("--- entering autoregressive inference 2.1 ---")
+    
+    # initialize ablation and target variables
+    fld = params.target
+    abl = params.ablate
 
-    #initialize memory for image sequences and RMSE/ACC
+    # initialize memory for image sequences and RMSE/ACC
     valid_loss = torch.zeros((prediction_length, n_out_channels)).to(device, dtype=torch.float)
     acc = torch.zeros((prediction_length, n_out_channels)).to(device, dtype=torch.float)
     
-    print("--- entering autoregressive inference 2.2 ---")
-
     # compute metrics in a coarse resolution too if params.interp is nonzero
     valid_loss_coarse = torch.zeros((prediction_length, n_out_channels)).to(device, dtype=torch.float)
     acc_coarse = torch.zeros((prediction_length, n_out_channels)).to(device, dtype=torch.float)
     acc_coarse_unweighted = torch.zeros((prediction_length, n_out_channels)).to(device, dtype=torch.float)
-    print("--- entering autoregressive inference 2.3 ---")
-
     acc_unweighted = torch.zeros((prediction_length, n_out_channels)).to(device, dtype=torch.float)
-    print("--- entering autoregressive inference 2.3.1 ---")
     seq_real = torch.zeros((prediction_length, n_in_channels, img_shape_x, img_shape_y)).to(device, dtype=torch.float)
-    print("--- entering autoregressive inference 2.3.2 ---")
     seq_pred = torch.zeros((prediction_length, n_in_channels, img_shape_x, img_shape_y)).to(device, dtype=torch.float)
-    print("--- entering autoregressive inference 2.4 ---")
 
     acc_land = torch.zeros((prediction_length, n_out_channels)).to(device, dtype=torch.float)
     acc_sea = torch.zeros((prediction_length, n_out_channels)).to(device, dtype=torch.float)
-    print("--- entering autoregressive inference 2.5 ---")
 
     if params.masked_acc:
-        print("--- entering autoregressive inference 2.6 ---")
         maskarray = torch.as_tensor(np.load(params.maskpath)[0:720]).to(device, dtype=torch.float)
     
-    print("--- entering autoregressive inference 3 ---")
+    logging.info("Extracting valid data from the first year")
     valid_data = valid_data_full[ic:(ic+prediction_length*dt+n_history*dt):dt, in_channels, 0:720] #extract valid data from first year
     # standardize
-    print("--- entering autoregressive inference 3.1 ---")
+    logging.info("Standardizing data")
     valid_data = (valid_data - means)/stds
-    print("--- entering autoregressive inference 3.2 ---")
     valid_data = torch.as_tensor(valid_data).to(device, dtype=torch.float)
-    print("--- entering autoregressive inference 3.3 ---")
     
     #load time means
     if not params.use_daily_climatology:
-        print("--- entering autoregressive inference 3.4 ---")
+        logging.info("Loading time means")
         if params.time_means_path.startswith("s3://"):
             m = torch.as_tensor((np.load(s3.open(params.time_means_path, 'rb'))[0][out_channels] - means)/stds)[:, 0:img_shape_x] # climatology
             m = torch.unsqueeze(m, 0)
@@ -240,15 +225,11 @@ def autoregressive_inference(params, ic, valid_data_full, model):
             m = torch.unsqueeze(m, 0)
     else:
         # use daily clim like weyn et al. (different from rasp)
-        print("--- entering autoregressive inference 3.5 ---")
         dc_path = params.dc_path
         with h5py.File(s3.open(dc_path, 'rb'), 'r') as f:  # with h5py.File(dc_path, 'r') as f:
             dc = f['time_means_daily'][ic:ic+prediction_length*dt:dt] # 1460,21,721,1440
-        print("--- entering autoregressive inference 3.6 ---")
         m = torch.as_tensor((dc[:,out_channels,0:img_shape_x,:] - means)/stds) 
     
-    print("--- entering autoregressive inference 4 ---")
-
     m = m.to(device, dtype=torch.float)
     if params.interp > 0:
         m_coarse = downsample(m, scale=params.interp)
@@ -258,75 +239,96 @@ def autoregressive_inference(params, ic, valid_data_full, model):
     orography = params.orography
     orography_path = params.orography_path
     if orography:
-      orog = torch.as_tensor(np.expand_dims(np.expand_dims(h5py.File(orography_path, 'r')['orog'][0:720], axis = 0), axis = 0)).to(device, dtype = torch.float)
-      logging.info("orography loaded; shape:{}".format(orog.shape))
+        orog = torch.as_tensor(np.expand_dims(np.expand_dims(h5py.File(orography_path, 'r')['orog'][0:720], axis = 0), axis = 0)).to(device, dtype = torch.float)
+        logging.info("orography loaded; shape:{}".format(orog.shape))
 
     #autoregressive inference
     if params.log_to_screen:
-      logging.info('Begin autoregressive inference')
+        logging.info('Begin autoregressive inference')
+    
+    abl_idx = idxes[abl]  # define index for ablation variable, used to access proper channel 
     
     with torch.no_grad():
-      for i in range(valid_data.shape[0]): 
-        if i==0: #start of sequence
-          first = valid_data[0:n_history+1]
-          future = valid_data[n_history+1]
-          for h in range(n_history+1):
-            seq_real[h] = first[h*n_in_channels : (h+1)*n_in_channels][0:n_out_channels] #extract history from 1st 
-            seq_pred[h] = seq_real[h]
-          if params.perturb:
-            first = gaussian_perturb(first, level=params.n_level, device=device) # perturb the ic
-          if orography:
-            future_pred = model(torch.cat((first, orog), axis=1))
-          else:
-            future_pred = model(first)
-        else:
-          if i < prediction_length-1:
-            future = valid_data[n_history+i+1]
-          if orography:
-            future_pred = model(torch.cat((future_pred, orog), axis=1)) #autoregressive step
-          else:
-            future_pred = model(future_pred) #autoregressive step
+        for i in range(valid_data.shape[0]): 
+            if i==0: #start of sequence
+                first = valid_data[0:n_history+1]
+                future = valid_data[n_history+1]
 
-        if i < prediction_length-1: #not on the last step
-          seq_pred[n_history+i+1] = future_pred
-          seq_real[n_history+i+1] = future
-          history_stack = seq_pred[i+1:i+2+n_history]
+                # Ablate channel by replacing it with zeros
+                first[0, abl_idx, :, :] = torch.zeros_like(first[0, abl_idx, :, :])
+                future[abl_idx, :, :] = torch.zeros_like(future[abl_idx, :, :])
 
-        future_pred = history_stack
-      
-        #Compute metrics 
-        if params.use_daily_climatology:
-            clim = m[i:i+1]
+                for h in range(n_history+1):
+                    seq_real[h] = first[h*n_in_channels : (h+1)*n_in_channels][0:n_out_channels] #extract history from 1st 
+                    seq_pred[h] = seq_real[h]
+                if params.perturb:
+                    first = gaussian_perturb(first, level=params.n_level, device=device) # perturb the ic
+                if orography:
+                    future_pred = model(torch.cat((first, orog), axis=1))
+                else:
+                    future_pred = model(first)
+
+                    # zero out the future_pred channel
+                    future_pred[0, abl_idx, :, :] = torch.zeros_like(future_pred[0, abl_idx, :, :])
+            else:
+                if i < prediction_length-1:
+                    future = valid_data[n_history+i+1]
+
+                    # Ablate channel by replacing it with zeros
+                    future[abl_idx, :, :] = torch.zeros_like(future[abl_idx, :, :])
+
+                if orography:
+                    future_pred = model(torch.cat((future_pred, orog), axis=1)) #autoregressive step
+
+                    # zero out the future_pred channel
+                    future_pred[0, abl_idx, :, :] = torch.zeros_like(future_pred[0, abl_idx, :, :])
+
+                else:
+                    future_pred = model(future_pred) #autoregressive step
+
+                    # zero out the future_pred channel
+                    future_pred[0, abl_idx, :, :] = torch.zeros_like(future_pred[0, abl_idx, :, :])
+
+
+            if i < prediction_length-1: #not on the last step
+                seq_pred[n_history+i+1] = future_pred
+                seq_real[n_history+i+1] = future
+                history_stack = seq_pred[i+1:i+2+n_history]
+
+            future_pred = history_stack
+
+            #Compute metrics 
+            if params.use_daily_climatology:
+                clim = m[i:i+1]
+                if params.interp > 0:
+                    clim_coarse = m_coarse[i:i+1]
+            else:
+                clim = m
+                if params.interp > 0:
+                    clim_coarse = m_coarse
+
+            pred = torch.unsqueeze(seq_pred[i], 0)
+            tar = torch.unsqueeze(seq_real[i], 0)
+            valid_loss[i] = weighted_rmse_torch_channels(pred, tar) * std
+            acc[i] = weighted_acc_torch_channels(pred-clim, tar-clim)
+            acc_unweighted[i] = unweighted_acc_torch_channels(pred-clim, tar-clim)
+
+            if params.masked_acc:
+                acc_land[i] = weighted_acc_masked_torch_channels(pred-clim, tar-clim, maskarray)
+                acc_sea[i] = weighted_acc_masked_torch_channels(pred-clim, tar-clim, 1-maskarray)
+
             if params.interp > 0:
-                clim_coarse = m_coarse[i:i+1]
-        else:
-            clim = m
-            if params.interp > 0:
-                clim_coarse = m_coarse
+                pred = downsample(pred, scale=params.interp)
+                tar = downsample(tar, scale=params.interp)
+                valid_loss_coarse[i] = weighted_rmse_torch_channels(pred, tar) * std
+                acc_coarse[i] = weighted_acc_torch_channels(pred-clim_coarse, tar-clim_coarse)
+                acc_coarse_unweighted[i] = unweighted_acc_torch_channels(pred-clim_coarse, tar-clim_coarse)
 
-        pred = torch.unsqueeze(seq_pred[i], 0)
-        tar = torch.unsqueeze(seq_real[i], 0)
-        valid_loss[i] = weighted_rmse_torch_channels(pred, tar) * std
-        acc[i] = weighted_acc_torch_channels(pred-clim, tar-clim)
-        acc_unweighted[i] = unweighted_acc_torch_channels(pred-clim, tar-clim)
-
-        if params.masked_acc:
-          acc_land[i] = weighted_acc_masked_torch_channels(pred-clim, tar-clim, maskarray)
-          acc_sea[i] = weighted_acc_masked_torch_channels(pred-clim, tar-clim, 1-maskarray)
-
-        if params.interp > 0:
-            pred = downsample(pred, scale=params.interp)
-            tar = downsample(tar, scale=params.interp)
-            valid_loss_coarse[i] = weighted_rmse_torch_channels(pred, tar) * std
-            acc_coarse[i] = weighted_acc_torch_channels(pred-clim_coarse, tar-clim_coarse)
-            acc_coarse_unweighted[i] = unweighted_acc_torch_channels(pred-clim_coarse, tar-clim_coarse)
-
-        if params.log_to_screen:
-          idx = idxes[fld] 
-          logging.info('Predicted timestep {} of {}. {} RMS Error: {}, ACC: {}'.format(i, prediction_length, fld, valid_loss[i, idx], acc[i, idx]))
-          if params.interp > 0:
-            logging.info('[COARSE] Predicted timestep {} of {}. {} RMS Error: {}, ACC: {}'.format(i, prediction_length, fld, valid_loss_coarse[i, idx],
-                        acc_coarse[i, idx]))
+            if params.log_to_screen:
+                idx = idxes[fld] 
+                logging.info('Predicted timestep {} of {}. {} RMS Error: {}, ACC: {}'.format(i, prediction_length, fld, valid_loss[i, idx], acc[i, idx]))
+                if params.interp > 0:
+                    logging.info('[COARSE] Predicted timestep {} of {}. {} RMS Error: {}, ACC: {}'.format(i, prediction_length, fld, valid_loss_coarse[i, idx], acc_coarse[i, idx]))
 
     seq_real = seq_real.cpu().numpy()
     seq_pred = seq_pred.cpu().numpy()
@@ -349,20 +351,31 @@ def autoregressive_inference(params, ic, valid_data_full, model):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--run_num", default='00', type=str)
-    parser.add_argument("--yaml_config", default='../config/AFNO.yaml', type=str)
+    parser.add_argument("--yaml_config", default='../config/AFNO.yaml', type=str)  # adjusted relative paths because Jupyter Notebook location change
     parser.add_argument("--config", default='full_field', type=str)
     parser.add_argument("--use_daily_climatology", action='store_true')
     parser.add_argument("--vis", action='store_true')
     parser.add_argument("--override_dir", default=None, type = str, help = 'Path to store inference outputs; must also set --weights arg')
     parser.add_argument("--interp", default=0, type=float)
     parser.add_argument("--weights", default=None, type=str, help = 'Path to model weights, for use with override_dir option')
+    parser.add_argument("--timesteps", default=4, type=int, help = 'Specify the number of timesteps (defaults to 4 timesteps)')
+    parser.add_argument("--target", default='U10', type=str, help = 'Specify which variable is used for predictions (defaults to U10)')
+    parser.add_argument("--ablate", default='', type=str, help = 'Specify which variable will be ablated (defaults to no ablation)')
     
     args = parser.parse_args()
     params = YParams(os.path.abspath(args.yaml_config), args.config)
+    # params = YParams(args.yaml_config, args.config)
+
     params['world_size'] = 1
     params['interp'] = args.interp
     params['use_daily_climatology'] = args.use_daily_climatology
     params['global_batch_size'] = params.batch_size
+    
+    # Add custom arguments for prediction length, target and ablated variables
+    params['prediction_length'] = args.timesteps
+    params['target'] = args.target
+    params['ablate'] = args.ablate
+
 
     # torch.cuda.set_device(0)  # commented out 7/14 to avoid errors
     # torch.backends.cudnn.benchmark = True  # commented out 7/14 to avoid errors
@@ -387,13 +400,26 @@ if __name__ == '__main__':
     logging_utils.log_to_file(logger_name=None, log_filename=os.path.join(expDir, 'inference_out.log'))
     # logging_utils.log_versions()  # commented out 7/14 to avoid errors
     params.log()
+    
+    # Set target and ablated variables
+    fld = params.target
+    abl = params.ablate
 
     n_ics = params['n_initial_conditions']
 
-    if fld == "z500" or fld == "t850":
+    if fld == "Z500" or fld == "T850":
         n_samples_per_year = 1336
     else:
         n_samples_per_year = 1460
+        
+        
+    # Moved DECORRELATION_TIME from top of the file so 'fld' variable is updated
+    if fld == "Z500" or fld == "T2m" or fld == "T850":     # diff flds have diff decor times and hence differnt ics
+        DECORRELATION_TIME = 36 # 9 days (36) for z500, 2 (8 steps) days for u10, v10
+    else:
+        DECORRELATION_TIME = 8 # 9 days (36) for z500, 2 (8 steps) days for u10, v10
+    # idxes = {"u10":0, "z500":14, "2m_temperature":2, "v10":1, "t850":5}
+
 
     if params["ics_type"] == 'default':
         num_samples = n_samples_per_year-params.prediction_length
@@ -431,8 +457,13 @@ if __name__ == '__main__':
 
     if params.interp > 0:
         autoregressive_inference_filetag = "_coarse"
+    
+    if params.ablate == '':
+        ablate_filetag = ''
+    else: 
+        ablate_filetag = 'iter_ablate-' + params.ablate
 
-    autoregressive_inference_filetag += "_" + fld + ""
+    autoregressive_inference_filetag += ablate_filetag + "_" + str(params.prediction_length) + "-timesteps" + "" 
     if vis:
         autoregressive_inference_filetag += "_vis"
     # get data and models
@@ -485,8 +516,8 @@ if __name__ == '__main__':
 
     #save predictions and loss
     if params.log_to_screen:
-      logging.info("Saving files at {}".format(os.path.join(params['experiment_dir'], 'autoregressive_predictions' + autoregressive_inference_filetag + '.h5')))
-    with h5py.File(os.path.join(params['experiment_dir'], 'autoregressive_predictions'+ autoregressive_inference_filetag +'.h5'), 'a') as f:
+      logging.info("Saving files at {}".format(os.path.join(params['experiment_dir'], autoregressive_inference_filetag + '.h5')))
+    with h5py.File(os.path.join(params['experiment_dir'], autoregressive_inference_filetag +'.h5'), 'a') as f:
       if vis:
         try:
             f.create_dataset("ground_truth", data = seq_real, shape = (n_ics, prediction_length, n_out_channels, img_shape_x, img_shape_y), dtype = np.float32)
