@@ -125,7 +125,8 @@ precip: &precip
   lr: 2.5E-4
   batch_size: 64
   max_epochs: 25
-  precip: '/content/drive/MyDrive/FourCastNet/data/precip/out_of_sample'
+
+  precip: '/content/ccai_demo/data/FCN_ERA5_data_v0/out_of_sample/precip'
   time_means_path_tp: '/content/ccai_demo/additional/stats_v0/precip/time_means.npy'
   model_wind_path: '/content/ccai_demo/model_weights/FCN_weights_v0/backbone.ckpt'
   precip_eps: !!float 1e-5
